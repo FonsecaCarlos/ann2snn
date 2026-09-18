@@ -704,6 +704,19 @@ def finetune_surrogate_gradients(
 # 8. MONITOR DE CONSUMO ENERGÉTICO (CarbonTracker + Telemetria de Hardware)
 # ==============================================================================
 
+def format_duration(seconds: float) -> str:
+    """Formata segundos em uma representação legível (ex: '45.20s', '2m 15.30s' ou '1h 05m 20.00s')."""
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes = int(seconds // 60)
+    rem_sec = seconds % 60
+    if minutes < 60:
+        return f"{minutes}m {rem_sec:05.2f}s"
+    hours = int(minutes // 60)
+    rem_min = minutes % 60
+    return f"{hours}h {rem_min:02d}m {rem_sec:05.2f}s"
+
+
 def get_hardware_info() -> Dict[str, Any]:
     """Coleta especificações detalhadas de hardware da CPU, GPU e RAM."""
     info = {
@@ -870,11 +883,12 @@ class EnergyMonitor:
         return record
 
     def export_csv(self, filename: str = "consumo_energia_ann2snn.csv") -> str:
-        """Exporta todos os dados das etapas para formato CSV."""
+        """Exporta todos os dados das etapas e o total consolidado para formato CSV."""
         filepath = os.path.join(self.output_dir, filename)
         fieldnames = [
             "Etapa",
             "Duracao_s",
+            "Duracao_Formatada",
             "CPU_Energia_kWh",
             "GPU_Energia_kWh",
             "RAM_Energia_kWh",
@@ -884,6 +898,17 @@ class EnergyMonitor:
             "RAM_Usada_MB",
             "Dispositivo"
         ]
+
+        total_dur = sum(s["duracao_s"] for s in self.stages)
+        total_cpu_kwh = sum(s["cpu_energia_kwh"] for s in self.stages)
+        total_gpu_kwh = sum(s["gpu_energia_kwh"] for s in self.stages)
+        total_ram_kwh = sum(s["ram_energia_kwh"] for s in self.stages)
+        total_kwh = sum(s["total_energia_kwh"] for s in self.stages)
+        total_co2_g = sum(s["co2_g"] for s in self.stages)
+        max_vram = max([s["vram_pico_mb"] for s in self.stages], default=0.0)
+        max_ram = max([s["ram_usada_mb"] for s in self.stages], default=0.0)
+        dispositivo = self.hardware_info["gpu_name"] if torch.cuda.is_available() else "CPU"
+
         with open(filepath, mode="w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
@@ -891,6 +916,7 @@ class EnergyMonitor:
                 writer.writerow({
                     "Etapa": s["etapa"],
                     "Duracao_s": f"{s['duracao_s']:.4f}",
+                    "Duracao_Formatada": format_duration(s["duracao_s"]),
                     "CPU_Energia_kWh": f"{s['cpu_energia_kwh']:.8f}",
                     "GPU_Energia_kWh": f"{s['gpu_energia_kwh']:.8f}",
                     "RAM_Energia_kWh": f"{s['ram_energia_kwh']:.8f}",
@@ -901,7 +927,22 @@ class EnergyMonitor:
                     "Dispositivo": s["dispositivo"]
                 })
 
-        print(f"[✓] Relatório CSV exportado para: {filepath}")
+            # Linha consolidada com o tempo total da conversão e somas
+            writer.writerow({
+                "Etapa": "TOTAL CONSOLIDADO",
+                "Duracao_s": f"{total_dur:.4f}",
+                "Duracao_Formatada": format_duration(total_dur),
+                "CPU_Energia_kWh": f"{total_cpu_kwh:.8f}",
+                "GPU_Energia_kWh": f"{total_gpu_kwh:.8f}",
+                "RAM_Energia_kWh": f"{total_ram_kwh:.8f}",
+                "Total_Energia_kWh": f"{total_kwh:.8f}",
+                "CO2_Emissoes_gCO2eq": f"{total_co2_g:.6f}",
+                "VRAM_Pico_MB": f"{max_vram:.2f}",
+                "RAM_Usada_MB": f"{max_ram:.2f}",
+                "Dispositivo": dispositivo
+            })
+
+        print(f"[✓] Relatório CSV exportado para: {filepath} (Tempo Total: {format_duration(total_dur)})")
         return filepath
 
     def export_md(self, filename: str = "relatorio_energia_ann2snn.md") -> str:
@@ -929,42 +970,57 @@ class EnergyMonitor:
 **Arquitetura SNN:** Backbone Convolucional Híbrido com Neurônio IF de Canal Duplo  
 **Biblioteca de Monitoramento:** CarbonTracker  
 **Data da Execução:** {now_str}  
+**Tempo Total da Conversão:** `{format_duration(total_dur)}` ({total_dur:.4f} segundos)  
 
 ---
 
-## 1. Especificações do Hardware de Execução
+## 1. Resumo Executivo e Especificações de Hardware
 
-| Parâmetro | Valor |
+| Métrica / Parâmetro | Valor Consolidado |
 | :--- | :--- |
+| **Tempo Total da Conversão** | **`{format_duration(total_dur)}`** (`{total_dur:.4f}s`) |
+| **Consumo Total de Energia** | **`{total_wh:.4f} Wh`** (`{total_joules:.2f} Joules`) |
+| **Emissões de CO₂ Estimadas** | **`{total_co2_g:.6f} gCO₂eq`** |
 | **Dispositivo de Aceleração (GPU)** | `{hw['gpu_name']}` |
 | **Quantidade de GPUs** | `{hw['gpu_count']}` |
 | **Memória de Vídeo Dedicada (VRAM)** | `{hw['vram_total_mb']} MB` |
-| **Processador (CPU)** | `{hw['processor']}` |
-| **Contagem de Núcleos de CPU** | `{hw['cpu_count']} núcleos` |
+| **Processador (CPU)** | `{hw['processor']}` ({hw['cpu_count']} núcleos) |
 | **Memória RAM do Sistema** | `{hw['ram_total_gb']} GB` |
 | **Sistema Operacional** | `{hw['platform']}` |
 | **CarbonTracker Ativo** | `{"Sim" if CARBONTRACKER_AVAILABLE else "Não (Telemetria estimada)"}` |
 
 ---
 
-## 2. Consumo Energético por Etapa do Pipeline
+## 2. Consumo Energético e Tempo por Etapa do Pipeline
 
-| Etapa | Duração (s) | CPU (Wh) | GPU (Wh) | RAM (Wh) | Total (Wh) | Total (Joules) | CO₂ (gCO₂eq) | VRAM Pico (MB) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Etapa | Duração (s) | Duração Formatada | CPU (Wh) | GPU (Wh) | RAM (Wh) | Total (Wh) | Total (Joules) | CO₂ (gCO₂eq) | VRAM Pico (MB) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 """
         for s in self.stages:
+            pct_stage_time = (s["duracao_s"] / total_dur * 100) if total_dur > 0 else 0
             md_content += (
-                f"| **{s['etapa']}** | {s['duracao_s']:.3f} | {s['cpu_energia_kwh']*1000:.4f} | "
-                f"{s['gpu_energia_kwh']*1000:.4f} | {s['ram_energia_kwh']*1000:.4f} | "
+                f"| **{s['etapa']}** | {s['duracao_s']:.4f} | `{format_duration(s['duracao_s'])}` ({pct_stage_time:.1f}%) | "
+                f"{s['cpu_energia_kwh']*1000:.4f} | {s['gpu_energia_kwh']*1000:.4f} | {s['ram_energia_kwh']*1000:.4f} | "
                 f"**{s['total_energia_wh']:.4f}** | {s['total_energia_joules']:.2f} | "
                 f"{s['co2_g']:.6f} | {s['vram_pico_mb']:.2f} |\n"
             )
 
-        md_content += f"""| **TOTAL CONSOLIDADO** | **{total_dur:.3f}** | **{total_cpu_kwh*1000:.4f}** | **{total_gpu_kwh*1000:.4f}** | **{total_ram_kwh*1000:.4f}** | **{total_wh:.4f}** | **{total_joules:.2f}** | **{total_co2_g:.6f}** | - |
+        md_content += f"""| **TOTAL CONSOLIDADO** | **{total_dur:.4f}** | **`{format_duration(total_dur)}` (100%)** | **{total_cpu_kwh*1000:.4f}** | **{total_gpu_kwh*1000:.4f}** | **{total_ram_kwh*1000:.4f}** | **{total_wh:.4f}** | **{total_joules:.2f}** | **{total_co2_g:.6f}** | - |
 
 ---
 
-## 3. Decomposição de Consumo por Componente
+## 3. Análise do Tempo Total de Execução
+
+* **Tempo Total de Processamento:** `{format_duration(total_dur)}` ({total_dur:.4f} segundos).
+"""
+        for s in self.stages:
+            pct_stage_time = (s["duracao_s"] / total_dur * 100) if total_dur > 0 else 0
+            md_content += f"* **{s['etapa']}:** `{format_duration(s['duracao_s'])}` ({pct_stage_time:.1f}% do tempo total)\n"
+
+        md_content += f"""
+---
+
+## 4. Decomposição de Consumo por Componente
 
 * **GPU (`{hw['gpu_name']}`):** `{total_gpu_kwh*1000:.4f} Wh` (**{pct_gpu:.2f}%** do total)
 * **CPU:** `{total_cpu_kwh*1000:.4f} Wh` (**{pct_cpu:.2f}%** do total)
@@ -979,7 +1035,7 @@ Consumo por Componente:
 
 ---
 
-## 4. Impacto Ambiental e Pegada de Carbono
+## 5. Impacto Ambiental e Pegada de Carbono
 
 * **Emissões Totais de Gases de Efeito Estufa:** `{total_co2_g:.6f} gCO₂eq`
 * **Equivalente em Quilômetros Percorridos por Veículo a Combustão:** `{total_co2_g / 120.0 * 1000:.4f} metros`
@@ -987,7 +1043,7 @@ Consumo por Componente:
 
 ---
 
-## 5. Análise de Eficiência Neuromórfica (SNN vs. ANN)
+## 6. Análise de Eficiência Neuromórfica (SNN vs. ANN)
 
 1. **Backbone SNN com Canal Duplo:**
    * A codificação por taxa de disparo (*Rate Coding*) ao longo de $T=16$ passos temporais permite quantificar o número exato de eventos sinápticos (*Synaptic Operations* - SOPs).
@@ -1002,7 +1058,7 @@ Consumo por Componente:
         with open(filepath, mode="w", encoding="utf-8") as f:
             f.write(md_content)
 
-        print(f"[✓] Relatório Markdown exportado para: {filepath}")
+        print(f"[✓] Relatório Markdown exportado para: {filepath} (Tempo Total: {format_duration(total_dur)})")
         return filepath
 
 
