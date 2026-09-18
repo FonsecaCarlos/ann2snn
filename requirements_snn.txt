@@ -4,3 +4,7 @@ torchvision>=0.14.0
 spikingjelly>=0.0.0.0.14
 numpy>=1.21.0
 
+# Monitoramento de Consumo Energético e Emissões
+carbontracker>=1.1.0
+pynvml>=11.4.1
+psutil>=5.9.0
