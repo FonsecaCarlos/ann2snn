@@ -1,0 +1,6 @@
+# Dependências para execução do módulo ANN2SNN (SpikingJelly + PyTorch)
+torch>=1.13.0
+torchvision>=0.14.0
+spikingjelly>=0.0.0.0.14
+numpy>=1.21.0
+
